@@ -9,14 +9,17 @@ import wave as _wave
 
 
 rc_broadcasting = None
+rc_parameters_set = None
+
 
 def _initialize():
     """Module initialization."""
-    print('Initialize')
     _rpitx.initialize_rc()
-    print('Done initialize')
+    rc_broadcasting = False
     global rc_broadcasting
     rc_broadcasting = False
+    global rc_parameters_set
+    rc_parameters_set = False
 
 
 _initialize()
@@ -56,30 +59,12 @@ def broadcast_fm(file_, frequency):
     _rpitx.broadcast_fm(array_address, length, frequency)
 
 
-def broadcast_rc(
-        frequency,
-        dead_frequency,
-        burst_us,
-        synchronization_burst_count,
-        synchronization_multiple
-):
-    """Starts broadcasting RC command signals.
-
-    Args:
-    frequency (float) -- Frequency to broadcast on.
-    dead_frequency (float) -- Frequency to broadcast on for gaps.
-    burst_us (int) -- Base time in nanosecnds.
-    synchronization_burst_count (int) -- Number of bursts for synch signal.
-    synch_multiple (int) -- Length of synch burst as multiple of burstUs.
-    burst_count (int) -- Number of bursts for command signal.
-    """
-    set_rc_parameters(
-        frequency,
-        dead_frequency,
-        burst_us,
-        synchronization_burst_count,
-        synchronization_multiple
-    )
+def broadcast_rc():
+    """Starts broadcasting RC command signals."""
+    if not rc_parameters_set:
+        raise ValueError('Broadcast parameters not set')
+    if rc_broadcasting:
+        return
     global rc_broadcasting
     rc_broadcasting = True
     _rpitx.broadcast_rc()
@@ -87,6 +72,8 @@ def broadcast_rc(
 
 def stop_broadcasting_rc():
     """Halts the RC broadcast."""
+    global rc_broadcasting
+    rc_broadcasting = False
     _rpitx.stop_broadcasting_rc()
 
 
@@ -95,16 +82,17 @@ def set_rc_parameters(
         dead_frequency,
         burst_us,
         synchronization_burst_count,
-        synchronization_multiple
+        synchronization_multiple,
+        burst_count
 ):
     """Changes the currently broadcasting RC command signals."""
-    if not rc_broadcasting:
-        raise ValueError('RC is not broadcasting')
-
+    global rc_parameters_set
+    rc_parameters_set = True
     _rpitx.set_rc_pwm(
         frequency,
         dead_frequency,
         burst_us,
         synchronization_burst_count,
-        synchronization_multiple
+        synchronization_multiple,
+        burst_count
     )
