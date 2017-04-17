@@ -160,10 +160,27 @@ _rpitx_broadcast_fm(PyObject* self, PyObject* args) {
 }
 
 
+static PyObject*
+_rpitx_broadcast_sstv(PyObject* self, PyObject* args) {
+	Py_RETURN_NONE;
+}
+
+
 static PyMethodDef _rpitx_methods[] = {
 	{
 		"broadcast_fm",
 		_rpitx_broadcast_fm,
+		METH_VARARGS,
+		"Low-level broadcasting.\n\n"
+			"Broadcast a WAV formatted 48KHz memory array.\n"
+			"Args:\n"
+			"    address (int): Address of the memory array.\n"
+			"    length (int): Length of the memory array.\n"
+			"    frequency (float): The frequency, in MHz, to broadcast on.\n"
+	},
+	{
+		"broadcast_sstv",
+		_rpitx_broadcast_sstv,
 		METH_VARARGS,
 		"Low-level broadcasting.\n\n"
 			"Broadcast a WAV formatted 48KHz memory array.\n"
