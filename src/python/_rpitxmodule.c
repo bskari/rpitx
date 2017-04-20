@@ -24,6 +24,30 @@ static sf_count_t sampleOffset;
 static SNDFILE* sndFile;
 static int bitRate;
 
+typedef struct {
+	double frequency;
+	uint32_t waitForThisSample;
+} samplerf_t;
+typedef enum ColorChannelType {
+	SEPARATOR,
+	RED,
+	GREEN,
+	BLUE
+} ColorChannelType;
+
+// WAV prototypes
+static sf_count_t virtualSndfileGetLength(void* unused) __attribute__((warn_unused_result));
+static sf_count_t virtualSndfileRead(void* const dest, const sf_count_t count, void* const userData) __attribute__((warn_unused_result));
+static sf_count_t virtualSndfileTell(void* const unused) __attribute__((warn_unused_result));
+static ssize_t formatRfWrapper(void* const outBuffer, const size_t count) __attribute__((warn_unused_result));
+static void resetSndFile(void);
+
+// SSTV prototypes
+static ssize_t formatSstv(void* outBuffer, const size_t count) __attribute__((warn_unused_result));;
+static ssize_t addSstvHeader(samplerf_t** outBuffer) __attribute__((warn_unused_result));
+static ssize_t addSstvFooter(samplerf_t** outBuffer) __attribute__((warn_unused_result));
+static ssize_t sstvTone(double frequency, uint32_t timing, samplerf_t** outBuffer) __attribute__((warn_unused_result));
+
 
 // These methods used by libsndfile's virtual file open function
 static sf_count_t virtualSndfileGetLength(void* unused) {
@@ -61,10 +85,6 @@ static sf_count_t virtualSndfileSeek(
 }
 
 
-typedef struct {
-	double frequency;
-	uint32_t waitForThisSample;
-} samplerf_t;
 /**
  * Formats a chunk of an array of a mono 44k wav at a time and outputs IQ
  * formatted array for broadcast.
@@ -105,8 +125,177 @@ static ssize_t formatRfWrapper(void* const outBuffer, const size_t count) {
 	}
 	return numBytesWritten;
 }
-static void reset(void) {
+static void resetSndFile(void) {
 	sampleOffset = 0;
+}
+
+
+static ssize_t formatSstv(void* outBuffer, const size_t count) {
+	const int ROWS = 320;
+	const int COLUMNS = 240;
+	const int BYTES_PER_CHANNEL = ROWS * sizeof(samplerf_t) + sizeof(samplerf_t);
+	const double frequencyMartin1[3] = {1200, 1500, 1500};
+	const double timingMartin1[3] = {48720, 5720, 4576};
+
+	static int headerSet = 0;
+	static int footerSet = 0;
+	static int row = 0;
+	static int column = 0;
+	static ColorChannelType colorChannel = SEPARATOR;
+	// Because this is static, we can't use ROWS in the calculation of its size.
+	// I could just #define ROWS but because it's only used in this function,
+	// that seems less clean. Just drop an assert afterward instead.
+	static int line[320 * 3];
+	assert(sizeof(line) == ROWS * 3 * sizeof(int));
+
+	int bytesWrittenCount = 0;
+	samplerf_t* buffer = outBuffer;
+
+	if (!headerSet) {
+		bytesWrittenCount += addSstvHeader(&buffer);
+		headerSet = 1;
+		assert(bytesWrittenCount < count && "Header is too big");
+	}
+
+	while (column < COLUMNS) {
+		switch (colorChannel) {
+			case SEPARATOR:
+				if (bytesWrittenCount + 2 * sizeof(samplerf_t) > count) {
+					return bytesWrittenCount;
+				}
+				// Horizontal SYNC
+				bytesWrittenCount += sstvTone(frequencyMartin1[0], timingMartin1[0], &buffer);
+				// Separator Tone
+				bytesWrittenCount += sstvTone(frequencyMartin1[1], timingMartin1[1], &buffer);
+
+				colorChannel = GREEN;
+				break;
+
+			case GREEN:
+				if (bytesWrittenCount + BYTES_PER_CHANNEL > count) {
+					return bytesWrittenCount;
+				}
+				// TODO: Read into line
+				for (row = 0; row < ROWS; ++row) {
+					bytesWrittenCount += sstvTone(
+						frequencyMartin1[1] + line[row * 3 + 1] * 800 / 256,
+						timingMartin1[2],
+						&buffer
+					);
+				}
+				bytesWrittenCount += sstvTone(
+					frequencyMartin1[1],
+					timingMartin1[1],
+					&buffer
+				);
+				colorChannel = BLUE;
+				break;
+
+			case BLUE:
+				if (bytesWrittenCount + BYTES_PER_CHANNEL > count) {
+					return bytesWrittenCount;
+				}
+				for (row = 0; row < ROWS; ++row) {
+					bytesWrittenCount += sstvTone(
+						frequencyMartin1[1] + line[row * 3 + 2] * 800 / 256,
+						timingMartin1[2],
+						&buffer
+					);
+				}
+				bytesWrittenCount += sstvTone(
+					frequencyMartin1[1],
+					timingMartin1[1],
+					&buffer
+				);
+				colorChannel = RED;
+				break;
+
+			case RED:
+				if (bytesWrittenCount + BYTES_PER_CHANNEL > count) {
+					return bytesWrittenCount;
+				}
+				for (row = 0; row < ROWS; ++row) {
+					bytesWrittenCount += sstvTone(
+						frequencyMartin1[1] + line[row * 3 + 3] * 800 / 256,
+						timingMartin1[2],
+						&buffer
+					);
+				}
+				bytesWrittenCount += sstvTone(
+					frequencyMartin1[1],
+					timingMartin1[1],
+					&buffer
+				);
+				colorChannel = SEPARATOR;
+				++column;
+				break;
+
+			default:
+				assert(0 && "Invalid ColorChannelType");
+		}
+	}
+
+	if (footerSet) {
+		if (bytesWrittenCount + sizeof(samplerf_t) > count) {
+			ssize_t writtenCount = addSstvFooter(&buffer);
+			assert(writtenCount == sizeof(samplerf_t) && "Bad size test");
+			bytesWrittenCount += writtenCount;
+			footerSet = 1;
+		}
+	}
+	return bytesWrittenCount;
+}
+
+
+static ssize_t addSstvHeader(samplerf_t** outBuffer) {
+	ssize_t bytesWrittenCount = 0;
+	// bit of silence
+	bytesWrittenCount += sstvTone(0, 5000000, outBuffer);
+
+	// attention tones
+	bytesWrittenCount += sstvTone(1900, 100000, outBuffer);
+	bytesWrittenCount += sstvTone(1500, 1000000, outBuffer);
+	bytesWrittenCount += sstvTone(1900, 1000000, outBuffer);
+	bytesWrittenCount += sstvTone(1500, 1000000, outBuffer);
+	bytesWrittenCount += sstvTone(2300, 1000000, outBuffer);
+	bytesWrittenCount += sstvTone(1500, 1000000, outBuffer);
+	bytesWrittenCount += sstvTone(2300, 1000000, outBuffer);
+	bytesWrittenCount += sstvTone(1500, 1000000, outBuffer);
+
+	// VIS lead, break, mid, start
+	bytesWrittenCount += sstvTone(1900, 3000000, outBuffer);
+	bytesWrittenCount += sstvTone(1200, 100000, outBuffer);
+	bytesWrittenCount += sstvTone(1900, 3000000, outBuffer);
+	bytesWrittenCount += sstvTone(1200, 300000, outBuffer);
+
+	// VIS data bits (Martin 1)
+	bytesWrittenCount += sstvTone(1300, 300000, outBuffer);
+	bytesWrittenCount += sstvTone(1300, 300000, outBuffer);
+	bytesWrittenCount += sstvTone(1100, 300000, outBuffer);
+	bytesWrittenCount += sstvTone(1100, 300000, outBuffer);
+	bytesWrittenCount += sstvTone(1300, 300000, outBuffer);
+	bytesWrittenCount += sstvTone(1100, 300000, outBuffer);
+	bytesWrittenCount += sstvTone(1300, 300000, outBuffer);
+	bytesWrittenCount += sstvTone(1100, 300000, outBuffer);
+
+	// VIS stop
+	bytesWrittenCount += sstvTone(1200, 300000, outBuffer);
+
+	return bytesWrittenCount;
+}
+
+
+static ssize_t addSstvFooter(samplerf_t** outBuffer) {
+	// TODO
+	return 0;
+}
+
+
+static ssize_t sstvTone(double frequency, uint32_t timing, samplerf_t** outBuffer) {
+	(*outBuffer)->frequency = frequency;
+	(*outBuffer)->waitForThisSample = timing * 100;
+	*outBuffer = *outBuffer + 1;
+	return sizeof(samplerf_t);
 }
 
 
@@ -153,7 +342,7 @@ _rpitx_broadcast_fm(PyObject* self, PyObject* args) {
 		SIGWINCH,  // Window resized
 		0
 	};
-	pitx_run(MODE_RF, bitRate, frequency * 1000.0, 0.0, 0, formatRfWrapper, reset, skipSignals, 0);
+	pitx_run(MODE_RF, bitRate, frequency * 1000.0, 0.0, 0, formatRfWrapper, resetSndFile, skipSignals, 0);
 	sf_close(sndFile);
 
 	Py_RETURN_NONE;
@@ -162,6 +351,17 @@ _rpitx_broadcast_fm(PyObject* self, PyObject* args) {
 
 static PyObject*
 _rpitx_broadcast_sstv(PyObject* self, PyObject* args) {
+	Py_RETURN_NONE;
+}
+
+
+static PyObject*
+_rpitx_broadcast_ft(PyObject* self, PyObject* args) {
+	const size_t requestedByteCount = 20000;
+	char buffer[requestedByteCount];
+	for (int i = 0; i < 5; ++i) {
+		const ssize_t size = formatSstv(buffer, requestedByteCount);
+	}
 	Py_RETURN_NONE;
 }
 
@@ -179,11 +379,11 @@ static PyMethodDef _rpitx_methods[] = {
 			"    frequency (float): The frequency, in MHz, to broadcast on.\n"
 	},
 	{
-		"broadcast_sstv",
-		_rpitx_broadcast_sstv,
+		"broadcast_ft",
+		_rpitx_broadcast_ft,
 		METH_VARARGS,
 		"Low-level broadcasting.\n\n"
-			"Broadcast a WAV formatted 48KHz memory array.\n"
+			"Broadcast an FT array.\n"
 			"Args:\n"
 			"    address (int): Address of the memory array.\n"
 			"    length (int): Length of the memory array.\n"
