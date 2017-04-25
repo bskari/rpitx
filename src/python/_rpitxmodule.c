@@ -368,23 +368,26 @@ _rpitx_broadcast_sstv(PyObject* self, PyObject* args) {
 	const uint32_t rgbByteOffset = le32toh(*(uint32_t*)(bmpData + 10));
 	bmpData += rgbByteOffset;
 
-	FILE* out = fopen("my-out.ft", "w");
-	if (!out) {
-		printf("Failed to open file\n");
-		return NULL;
-	}
-	const size_t requestedByteCount = 6000;
-	char buffer[requestedByteCount];
-	for (int i = 0; i < 100000; ++i) {
-		const ssize_t size = formatSstv(buffer, requestedByteCount);
-		if (size == 0) {
-			i = 1000000;
-		}
-		fwrite(buffer, sizeof(buffer[0]), size, out);
-	}
-	fclose(out);
+	int skipSignals[] = {
+		SIGALRM,
+		SIGVTALRM,
+		SIGCHLD,  // We fork whenever calling broadcast_fm
+		SIGWINCH,  // Window resized
+		0
+	};
+	pitx_run(
+		MODE_RF,
+		0,  // Bit rate, ignored for MODE_RF
+		frequency * 1000.0,
+		0.0,  // ppmpll
+		0,  // NoUsePwmFrequency
+		formatSstv,
+		NULL,  // reset, not allowed for SSTV
+		skipSignals,
+		0  // SetDma
+	);
+
 	Py_RETURN_NONE;
-	return NULL;
 }
 
 

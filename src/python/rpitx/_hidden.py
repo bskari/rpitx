@@ -57,9 +57,6 @@ def broadcast_fm(file_name, frequency):
 
 def broadcast_sstv(file_name, frequency):
     """Broadcast a picture over SSTV."""
-    logging.basicConfig()
-    logger = logging.getLogger('rpitx')
-
     original_image = Image.open(file_name)
     original_size = original_image.size
     sstv_size = (320, 256)
