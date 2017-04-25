@@ -80,5 +80,5 @@ def broadcast_sstv(file_name, frequency):
     bmp_data = BufferIO()
     resized_image.save(bmp_data, 'BMP')
     raw_array = array.array('c', bmp_data.getvalue())
-    array_address, length = raw_array.buffer_info()
-    _rpitx.broadcast_ft(array_address, length, frequency)
+    array_address, _ = raw_array.buffer_info()
+    _rpitx.broadcast_sstv(array_address, frequency)

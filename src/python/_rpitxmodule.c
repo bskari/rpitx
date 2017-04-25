@@ -1,5 +1,6 @@
 #include <Python.h>
 #include <assert.h>
+#include <endian.h>
 #include <sndfile.h>
 
 #include "../RpiTx.h"
@@ -18,34 +19,36 @@ struct module_state {
 static struct module_state _state;
 #endif
 
-static void* sampleBase;
-static sf_count_t sampleLength;
-static sf_count_t sampleOffset;
-static SNDFILE* sndFile;
-static int bitRate;
-
 typedef struct {
 	double frequency;
 	uint32_t waitForThisSample;
+	int32_t padding;
 } samplerf_t;
-typedef enum ColorChannelType {
-	SEPARATOR,
-	RED,
-	GREEN,
-	BLUE
-} ColorChannelType;
 
-// WAV prototypes
+// WAV variables and prototypes
+static void* sampleBase = NULL;
+static sf_count_t sampleLength = 0;
+static sf_count_t sampleOffset = 0;
+static SNDFILE* sndFile = NULL;
+static int bitRate;
+
 static sf_count_t virtualSndfileGetLength(void* unused) __attribute__((warn_unused_result));
 static sf_count_t virtualSndfileRead(void* const dest, const sf_count_t count, void* const userData) __attribute__((warn_unused_result));
 static sf_count_t virtualSndfileTell(void* const unused) __attribute__((warn_unused_result));
 static ssize_t formatRfWrapper(void* const outBuffer, const size_t count) __attribute__((warn_unused_result));
 static void resetSndFile(void);
 
-// SSTV prototypes
+// SSTV variables and prototypes
+typedef enum ColorChannelType {
+	SEPARATOR,
+	RED,
+	GREEN,
+	BLUE
+} ColorChannelType;
+static unsigned char* bmpData = NULL;
 static ssize_t formatSstv(void* outBuffer, const size_t count) __attribute__((warn_unused_result));;
 static ssize_t addSstvHeader(samplerf_t** outBuffer) __attribute__((warn_unused_result));
-static ssize_t addSstvFooter(samplerf_t** outBuffer) __attribute__((warn_unused_result));
+static ssize_t addSstvTrailer(samplerf_t** outBuffer) __attribute__((warn_unused_result));
 static ssize_t sstvTone(double frequency, uint32_t timing, samplerf_t** outBuffer) __attribute__((warn_unused_result));
 
 
@@ -101,6 +104,7 @@ static ssize_t formatRfWrapper(void* const outBuffer, const size_t count) {
 	const int excursion = 6000;
 	int numBytesWritten = 0;
 	samplerf_t samplerf;
+	samplerf.padding = 0;
 	samplerf.waitForThisSample = 1e9 / ((float)bitRate);  //en 100 de nanosecond
 	char* const out = outBuffer;
 
@@ -137,32 +141,29 @@ static ssize_t formatSstv(void* outBuffer, const size_t count) {
 	const double frequencyMartin1[3] = {1200, 1500, 1500};
 	const double timingMartin1[3] = {48720, 5720, 4576};
 
-	static int headerSet = 0;
-	static int footerSet = 0;
+	int headerSet = 0;
 	static int row = 0;
 	static int column = 0;
 	static ColorChannelType colorChannel = SEPARATOR;
-	// Because this is static, we can't use ROWS in the calculation of its size.
-	// I could just #define ROWS but because it's only used in this function,
-	// that seems less clean. Just drop an assert afterward instead.
-	static int line[320 * 3];
-	assert(sizeof(line) == ROWS * 3 * sizeof(int));
 
 	int bytesWrittenCount = 0;
 	samplerf_t* buffer = outBuffer;
 
 	if (!headerSet) {
 		bytesWrittenCount += addSstvHeader(&buffer);
+		bytesWrittenCount += addSstvTrailer(&buffer);
 		headerSet = 1;
 		assert(bytesWrittenCount < count && "Header is too big");
 	}
 
 	while (column < COLUMNS) {
+		int before;
 		switch (colorChannel) {
 			case SEPARATOR:
 				if (bytesWrittenCount + 2 * sizeof(samplerf_t) > count) {
 					return bytesWrittenCount;
 				}
+				before = bytesWrittenCount;
 				// Horizontal SYNC
 				bytesWrittenCount += sstvTone(frequencyMartin1[0], timingMartin1[0], &buffer);
 				// Separator Tone
@@ -175,10 +176,10 @@ static ssize_t formatSstv(void* outBuffer, const size_t count) {
 				if (bytesWrittenCount + BYTES_PER_CHANNEL > count) {
 					return bytesWrittenCount;
 				}
-				// TODO: Read into line
+				before = bytesWrittenCount;
 				for (row = 0; row < ROWS; ++row) {
 					bytesWrittenCount += sstvTone(
-						frequencyMartin1[1] + line[row * 3 + 1] * 800 / 256,
+						frequencyMartin1[1] + bmpData[row * 3 + 0] * 800 / 256,
 						timingMartin1[2],
 						&buffer
 					);
@@ -195,9 +196,10 @@ static ssize_t formatSstv(void* outBuffer, const size_t count) {
 				if (bytesWrittenCount + BYTES_PER_CHANNEL > count) {
 					return bytesWrittenCount;
 				}
+				before = bytesWrittenCount;
 				for (row = 0; row < ROWS; ++row) {
 					bytesWrittenCount += sstvTone(
-						frequencyMartin1[1] + line[row * 3 + 2] * 800 / 256,
+						frequencyMartin1[1] + bmpData[row * 3 + 1] * 800 / 256,
 						timingMartin1[2],
 						&buffer
 					);
@@ -214,13 +216,16 @@ static ssize_t formatSstv(void* outBuffer, const size_t count) {
 				if (bytesWrittenCount + BYTES_PER_CHANNEL > count) {
 					return bytesWrittenCount;
 				}
+				before = bytesWrittenCount;
 				for (row = 0; row < ROWS; ++row) {
 					bytesWrittenCount += sstvTone(
-						frequencyMartin1[1] + line[row * 3 + 3] * 800 / 256,
+						frequencyMartin1[1] + bmpData[row * 3 + 2] * 800 / 256,
 						timingMartin1[2],
 						&buffer
 					);
 				}
+				// Go to the next line
+				bmpData += ROWS * 3;
 				bytesWrittenCount += sstvTone(
 					frequencyMartin1[1],
 					timingMartin1[1],
@@ -235,14 +240,6 @@ static ssize_t formatSstv(void* outBuffer, const size_t count) {
 		}
 	}
 
-	if (footerSet) {
-		if (bytesWrittenCount + sizeof(samplerf_t) > count) {
-			ssize_t writtenCount = addSstvFooter(&buffer);
-			assert(writtenCount == sizeof(samplerf_t) && "Bad size test");
-			bytesWrittenCount += writtenCount;
-			footerSet = 1;
-		}
-	}
 	return bytesWrittenCount;
 }
 
@@ -285,9 +282,16 @@ static ssize_t addSstvHeader(samplerf_t** outBuffer) {
 }
 
 
-static ssize_t addSstvFooter(samplerf_t** outBuffer) {
-	// TODO
-	return 0;
+static ssize_t addSstvTrailer(samplerf_t** outBuffer) {
+	ssize_t bytesWrittenCount = 0;
+	bytesWrittenCount += sstvTone(2300, 3000000, outBuffer);
+	bytesWrittenCount += sstvTone(1200, 100000, outBuffer);
+	bytesWrittenCount += sstvTone(2300, 1000000, outBuffer);
+	bytesWrittenCount += sstvTone(1200, 300000, outBuffer);
+
+	// bit of silence
+	bytesWrittenCount += sstvTone(0, 5000000, outBuffer);
+	return bytesWrittenCount;
 }
 
 
@@ -351,18 +355,36 @@ _rpitx_broadcast_fm(PyObject* self, PyObject* args) {
 
 static PyObject*
 _rpitx_broadcast_sstv(PyObject* self, PyObject* args) {
-	Py_RETURN_NONE;
-}
+	float frequency;
 
-
-static PyObject*
-_rpitx_broadcast_ft(PyObject* self, PyObject* args) {
-	const size_t requestedByteCount = 20000;
-	char buffer[requestedByteCount];
-	for (int i = 0; i < 5; ++i) {
-		const ssize_t size = formatSstv(buffer, requestedByteCount);
+	assert(sizeof(bmpData) == sizeof(unsigned long));
+	if (!PyArg_ParseTuple(args, "Lf", &bmpData, &frequency)) {
+		struct module_state* st = GETSTATE(self);
+		PyErr_SetString(st->error, "Invalid arguments");
+		return NULL;
 	}
+
+	// Jump bmpData to where the actual RGB values start
+	const uint32_t rgbByteOffset = le32toh(*(uint32_t*)(bmpData + 10));
+	bmpData += rgbByteOffset;
+
+	FILE* out = fopen("my-out.ft", "w");
+	if (!out) {
+		printf("Failed to open file\n");
+		return NULL;
+	}
+	const size_t requestedByteCount = 6000;
+	char buffer[requestedByteCount];
+	for (int i = 0; i < 100000; ++i) {
+		const ssize_t size = formatSstv(buffer, requestedByteCount);
+		if (size == 0) {
+			i = 1000000;
+		}
+		fwrite(buffer, sizeof(buffer[0]), size, out);
+	}
+	fclose(out);
 	Py_RETURN_NONE;
+	return NULL;
 }
 
 
@@ -379,14 +401,13 @@ static PyMethodDef _rpitx_methods[] = {
 			"    frequency (float): The frequency, in MHz, to broadcast on.\n"
 	},
 	{
-		"broadcast_ft",
-		_rpitx_broadcast_ft,
+		"broadcast_sstv",
+		_rpitx_broadcast_sstv,
 		METH_VARARGS,
 		"Low-level broadcasting.\n\n"
-			"Broadcast an FT array.\n"
+			"Broadcast an 320x240 BMP file over SSTV.\n"
 			"Args:\n"
-			"    address (int): Address of the memory array.\n"
-			"    length (int): Length of the memory array.\n"
+			"    address (int): Address of the BMP memory array.\n"
 			"    frequency (float): The frequency, in MHz, to broadcast on.\n"
 	},
 	{NULL, NULL, 0, NULL}

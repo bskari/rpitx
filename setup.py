@@ -25,5 +25,5 @@ setup(
     ],
     packages=['rpitx'],
     package_dir={'': 'src/python'},
-    install_requires=['future', 'pydub', 'wave'],
+    install_requires=['future', 'pillow', 'pydub', 'wave'],
 )
