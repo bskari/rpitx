@@ -1,9 +1,6 @@
 """Hides imports and other irrelevant things so that ipython works nicely."""
 
 from __future__ import absolute_import, division, print_function
-from builtins import (
-    bytes, str, open, super, range, zip, round, input, int, pow, object
-)
 
 from PIL import Image
 from pydub import AudioSegment
@@ -13,12 +10,6 @@ import io
 import logging
 import sys
 import wave
-
-
-if sys.version_info.major >= 3:
-    BufferIO = io.StringIO
-else:
-    BufferIO = io.BytesIO
 
 
 def broadcast_fm(file_name, frequency):
@@ -42,7 +33,7 @@ def broadcast_fm(file_name, frequency):
 
     raw_audio_data = _reencode(file_name)
 
-    wav_data = BufferIO()
+    wav_data = io.BytesIO()
     wav_writer = wave.open(wav_data, 'w')
     wav_writer.setnchannels(1)
     wav_writer.setsampwidth(2)
@@ -50,7 +41,7 @@ def broadcast_fm(file_name, frequency):
     wav_writer.writeframes(raw_audio_data.raw_data)
     wav_writer.close()
 
-    raw_array = array.array('c', wav_data.getvalue())
+    raw_array = array.array('b', wav_data.getvalue())
     array_address, length = raw_array.buffer_info()
     _rpitx.broadcast_fm(array_address, length, frequency)
 
@@ -74,8 +65,8 @@ def broadcast_sstv(file_name, frequency):
     resized_image.paste(scaled_image, center)
 
     resized_image = resized_image.convert('RGB')
-    bmp_data = BufferIO()
+    bmp_data = io.BytesIO()
     resized_image.save(bmp_data, 'BMP')
-    raw_array = array.array('c', bmp_data.getvalue())
+    raw_array = array.array('b', bmp_data.getvalue())
     array_address, _ = raw_array.buffer_info()
     _rpitx.broadcast_sstv(array_address, frequency)
